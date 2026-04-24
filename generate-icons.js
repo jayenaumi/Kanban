@@ -5,8 +5,8 @@ import path from 'path';
 // like 'sharp', we would resize the logo.
 // Here we are just copying the file to the target names to satisfy the PWA manifest.
 
-const logoPath = './pioneer-logo.png';
-const targets = ['./icon-192.png', './icon-512.png'];
+const logoPath = './public/pioneer-logo.png';
+const targets = ['./public/icon-192.png', './public/icon-512.png'];
 
 if (fs.existsSync(logoPath)) {
   targets.forEach(target => {
