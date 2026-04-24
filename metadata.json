@@ -1,8 +1,0 @@
-{
-  "name": "Production Tracker",
-  "description": "Enterprise-grade production tracking PWA",
-  "requestFramePermissions": [
-    "camera",
-    "microphone"
-  ]
-}
