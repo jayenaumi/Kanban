@@ -14,6 +14,7 @@ interface LayoutProps {
 const Layout: React.FC<LayoutProps> = ({ children, activeTab, setActiveTab, user }) => {
   const menuItems = [
     { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
+    { id: 'order-info', label: 'Order Info', icon: ClipboardList },
     { id: 'generate-qr', label: 'QR Code', icon: QrCode },
     { id: 'scan', label: 'Scan', icon: Camera },
     { id: 'orders', label: 'Reports', icon: ClipboardList },

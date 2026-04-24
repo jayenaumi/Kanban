@@ -35,7 +35,11 @@ import {
   QrCode,
   FileText,
   Copy,
-  Plus
+  Plus,
+  Database,
+  Mail,
+  ChevronLeft,
+  ChevronRight
 } from 'lucide-react';
 import { cn } from './lib/utils';
 import { motion } from 'motion/react';
@@ -47,6 +51,7 @@ const App: React.FC = () => {
   const qrContainerRef = useRef<HTMLDivElement>(null);
   const [dbOrders, setDbOrders] = useState<any[]>([]);
   const [dbRejections, setDbRejections] = useState<any[]>([]);
+  const [dbOrderInfo, setDbOrderInfo] = useState<any[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [showCamera, setShowCamera] = useState(false);
   
@@ -80,7 +85,74 @@ const App: React.FC = () => {
     cutting_qty: '',
     bundle_qty: '20'
   });
+  const [qrSizeEntries, setQrSizeEntries] = useState<Record<string, { cutting_qty: string, bundle_qty: string }>>({});
   const [generatedBundles, setGeneratedBundles] = useState<any[]>([]);
+
+  // Find matching order info for QR generation
+  const qrMatchedOrder = useMemo(() => {
+    if (!qrFormData.buyer || !qrFormData.style || !qrFormData.po || !qrFormData.color) return null;
+    return dbOrderInfo.find(o => 
+      o.buyer === qrFormData.buyer && 
+      o.style === qrFormData.style && 
+      o.po === qrFormData.po && 
+      o.color === qrFormData.color
+    );
+  }, [dbOrderInfo, qrFormData.buyer, qrFormData.style, qrFormData.po, qrFormData.color]);
+
+  // Derived stats for each size
+  const qrSizeStats = useMemo(() => {
+    const stats: Record<string, { orderQty: number, totalCut: number }> = {};
+    if (!qrMatchedOrder) return stats;
+
+    const sizes = qrMatchedOrder.size_data || [];
+    sizes.forEach((s: any) => {
+      // Calculate total cut so far for this specific size in this specific order
+      const totalCut = dbOrders
+        .filter(o => 
+          o.style === qrMatchedOrder.style && 
+          o.po === qrMatchedOrder.po && 
+          o.color === qrMatchedOrder.color && 
+          o.size === s.size
+        )
+        .reduce((sum, o) => sum + (o.cutting_in || 0), 0);
+
+      stats[s.size] = {
+        orderQty: parseInt(s.qty) || 0,
+        totalCut
+      };
+    });
+    return stats;
+  }, [qrMatchedOrder, dbOrders]);
+
+  const qrTableTotals = useMemo(() => {
+    if (!qrMatchedOrder) return { orderQty: 0, prevCut: 0, cuttingPlanned: 0 };
+    
+    let orderQty = 0;
+    let prevCut = 0;
+    let cuttingPlanned = 0;
+
+    (qrMatchedOrder.size_data || []).forEach((s: any) => {
+      const stats = qrSizeStats[s.size] || { orderQty: 0, totalCut: 0 };
+      const entry = qrSizeEntries[s.size] || { cutting_qty: '', bundle_qty: '20' };
+      
+      orderQty += stats.orderQty;
+      prevCut += stats.totalCut;
+      cuttingPlanned += (parseInt(entry.cutting_qty) || 0);
+    });
+
+    return { orderQty, prevCut, cuttingPlanned };
+  }, [qrMatchedOrder, qrSizeStats, qrSizeEntries]);
+
+  // Initialize size entries when order is matched
+  useEffect(() => {
+    if (qrMatchedOrder) {
+      const newEntries: Record<string, { cutting_qty: string, bundle_qty: string }> = {};
+      (qrMatchedOrder.size_data || []).forEach((s: any) => {
+        newEntries[s.size] = qrSizeEntries[s.size] || { cutting_qty: '', bundle_qty: qrFormData.bundle_qty || '20' };
+      });
+      setQrSizeEntries(newEntries);
+    }
+  }, [qrMatchedOrder, qrFormData.bundle_qty]);
 
   const [modal, setModal] = useState<{
     isOpen: boolean;
@@ -115,6 +187,7 @@ const App: React.FC = () => {
   const [rejectionReason, setRejectionReason] = useState('');
   const [scanStatus, setScanStatus] = useState<{message: string, type: 'success' | 'error' | 'warning' | null}>({message: '', type: null});
   const [orderSearch, setOrderSearch] = useState({ buyer: '', style: '', po: '' });
+  const [orderInfoSearch, setOrderInfoSearch] = useState({ buyer: '', style: '' });
   
   // History Tab Specific Search State
   const [historySearch, setHistorySearch] = useState({
@@ -125,8 +198,31 @@ const App: React.FC = () => {
     sewingLine: 'ALL',
     finishingLine: 'ALL'
   });
+
+  // Pagination states
+  const [orderInfoPage, setOrderInfoPage] = useState(1);
+  const [ordersPage, setOrdersPage] = useState(1);
+  const [rejectionsPage, setRejectionsPage] = useState(1);
+  const [hourlyReportsPage, setHourlyReportsPage] = useState(1);
+  const [historyPage, setHistoryPage] = useState(1);
+  const rowsPerPage = 30;
+
   const [hourlyReportDate, setHourlyReportDate] = useState(new Date().toLocaleDateString('en-CA'));
   const [hourlyReportProcess, setHourlyReportProcess] = useState('Sewing Output');
+
+  useEffect(() => setOrderInfoPage(1), [orderInfoSearch]);
+  useEffect(() => setOrdersPage(1), [orderCategoryFilter, orderStartDate, orderEndDate, orderSearch, orderProcessStepFilter, orderSewingLineFilter, orderFinishingLineFilter]);
+  useEffect(() => setRejectionsPage(1), [rejectionSearch, rejectionCategoryFilter, rejectionStartDate, rejectionEndDate]);
+  useEffect(() => setHourlyReportsPage(1), [hourlyReportDate, hourlyReportProcess]);
+  useEffect(() => setHistoryPage(1), [historySearch]);
+
+  const [orderMasterData, setOrderMasterData] = useState({
+    buyer: '',
+    style: '',
+    po: '',
+    color: '',
+    sizes: [{ id: Math.random().toString(36).substr(2, 9), size: '', qty: '' }]
+  });
 
   // Map UI Process name to exact DB Column name
   const processToColumn = (process: string): string => {
@@ -160,135 +256,41 @@ const App: React.FC = () => {
   };
 
   const handleGenerateQR = async () => {
-    const { buyer, style, po, color, size, po_qty, cutting_qty, bundle_qty } = qrFormData;
-    if (!style || !po || !cutting_qty || !bundle_qty) {
+    const { buyer, style, po, color } = qrFormData;
+    
+    // Check if we have any size entries
+    const entriesToProcess = Object.entries(qrSizeEntries).filter(([_, data]) => (parseInt(data.cutting_qty) || 0) > 0);
+    
+    if (entriesToProcess.length === 0) {
       setModal({
         isOpen: true,
         title: 'Validation Error',
-        message: 'Style, PO, Cutting Qty, and Bundle Qty are required.',
+        message: 'Please enter cutting quantity for at least one size.',
         type: 'error'
       });
       return;
     }
 
-    const totalQty = parseInt(cutting_qty);
-    const bQty = parseInt(bundle_qty);
-    const numBundles = Math.ceil(totalQty / bQty);
-    
     const now = new Date();
     const dateStr = now.toISOString().slice(2, 10).replace(/-/g, ''); // YYMMDD
-    
-    const newBundles = [];
-    for (let i = 1; i <= numBundles; i++) {
-      const currentBQty = (i === numBundles) ? (totalQty - (i - 1) * bQty) : bQty;
-      const bundleNum = i.toString().padStart(3, '0');
-      const randomPart = Math.floor(Math.random() * 1000).toString().padStart(3, '0');
-      const bundleId = `PG-${dateStr}${bundleNum}${randomPart}`;
-      
-      const qrData = `ID=${bundleId}|Buyer=${buyer}|Style=${style}|PO=${po}|Color=${color}|Size=${size}|PO Qty=${po_qty}|Bundle Qty=${currentBQty}`;
-      
-      newBundles.push({
-        id: bundleId,
-        buyer,
-        style,
-        po,
-        color,
-        size,
-        po_qty,
-        bundle_qty: currentBQty,
-        qrData
-      });
-    }
-    
-    setGeneratedBundles(newBundles);
-  };
+    const newBundles: any[] = [];
+    let bundleCounter = 1;
 
-  const handleGeneratePcsQR = async () => {
-    const { buyer, style, po, color, size, po_qty, cutting_qty } = qrFormData;
-    if (!style || !po || !cutting_qty) {
-      setModal({
-        isOpen: true,
-        title: 'Validation Error',
-        message: 'Style, PO, and Cutting Qty are required.',
-        type: 'error'
-      });
-      return;
-    }
-
-    const totalQty = parseInt(cutting_qty);
-    const now = new Date();
-    const dateStr = now.toISOString().slice(2, 10).replace(/-/g, ''); // YYMMDD
-    
-    const newBundles = [];
-    for (let i = 1; i <= totalQty; i++) {
-      const pcsNum = i.toString().padStart(4, '0');
-      const randomPart = Math.floor(Math.random() * 1000).toString().padStart(3, '0');
-      const bundleId = `PCS-${dateStr}${pcsNum}${randomPart}`;
-      
-      const qrData = `ID=${bundleId}|Buyer=${buyer}|Style=${style}|PO=${po}|Color=${color}|Size=${size}|PO Qty=${po_qty}|Bundle Qty=1`;
-      
-      newBundles.push({
-        id: bundleId,
-        buyer,
-        style,
-        po,
-        color,
-        size,
-        po_qty,
-        bundle_qty: 1,
-        qrData
-      });
-    }
-    
-    setGeneratedBundles(newBundles);
-  };
-
-  const handleCuttingInput = async () => {
-    const { buyer, style, po, color, size, po_qty, cutting_qty, bundle_qty } = qrFormData;
-    if (!style || !po || !cutting_qty || !bundle_qty) {
-      setModal({
-        isOpen: true,
-        title: 'Validation Error',
-        message: 'Style, PO, Cutting Qty, and Bundle Qty are required for Cutting Input.',
-        type: 'error'
-      });
-      return;
-    }
-
-    setIsLoading(true);
-    try {
-      const totalQty = parseInt(cutting_qty);
-      const bQty = parseInt(bundle_qty);
+    entriesToProcess.forEach(([size, data]) => {
+      const totalQty = parseInt(data.cutting_qty);
+      const bQty = parseInt(data.bundle_qty) || 20;
       const numBundles = Math.ceil(totalQty / bQty);
-      const now = new Date();
-      const dateStr = now.toISOString().slice(2, 10).replace(/-/g, '');
-      
-      const payloads = [];
-      const newBundles = [];
+      const poQty = qrSizeStats[size]?.orderQty || 0;
 
       for (let i = 1; i <= numBundles; i++) {
         const currentBQty = (i === numBundles) ? (totalQty - (i - 1) * bQty) : bQty;
-        const bundleNum = i.toString().padStart(3, '0');
+        const bundleNum = bundleCounter.toString().padStart(4, '0');
         const randomPart = Math.floor(Math.random() * 1000).toString().padStart(3, '0');
         const bundleId = `PG-${dateStr}${bundleNum}${randomPart}`;
+        bundleCounter++;
         
-        const qrData = `ID=${bundleId}|Buyer=${buyer}|Style=${style}|PO=${po}|Color=${color}|Size=${size}|PO Qty=${po_qty}|Bundle Qty=${currentBQty}`;
-
-        payloads.push({
-          bundle_id: bundleId,
-          buyer: buyer || 'TBA',
-          style,
-          po,
-          color: color || 'N/A',
-          size: size || 'N/A',
-          po_quantity: parseInt(po_qty) || 0,
-          cutting_in: currentBQty,
-          line: selectedTable,
-          cutting_line: selectedTable,
-          created_at: now.toISOString(),
-          factory_name: user?.user_metadata?.factory
-        });
-
+        const qrData = `ID=${bundleId}|Buyer=${buyer}|Style=${style}|PO=${po}|Color=${color}|Size=${size}|PO Qty=${poQty}|Bundle Qty=${currentBQty}`;
+        
         newBundles.push({
           id: bundleId,
           buyer,
@@ -296,11 +298,129 @@ const App: React.FC = () => {
           po,
           color,
           size,
-          po_qty,
+          po_qty: poQty,
           bundle_qty: currentBQty,
           qrData
         });
       }
+    });
+    
+    setGeneratedBundles(newBundles);
+  };
+
+  const handleGeneratePcsQR = async () => {
+    const { buyer, style, po, color } = qrFormData;
+    const entriesToProcess = Object.entries(qrSizeEntries).filter(([_, data]) => (parseInt(data.cutting_qty) || 0) > 0);
+    
+    if (entriesToProcess.length === 0) {
+      setModal({
+        isOpen: true,
+        title: 'Validation Error',
+        message: 'Please enter cutting quantity for at least one size.',
+        type: 'error'
+      });
+      return;
+    }
+
+    const now = new Date();
+    const dateStr = now.toISOString().slice(2, 10).replace(/-/g, ''); // YYMMDD
+    const newBundles: any[] = [];
+    let pcsCounter = 1;
+
+    entriesToProcess.forEach(([size, data]) => {
+      const totalQty = parseInt(data.cutting_qty);
+      const poQty = qrSizeStats[size]?.orderQty || 0;
+
+      for (let i = 1; i <= totalQty; i++) {
+        const pcsNum = pcsCounter.toString().padStart(4, '0');
+        const randomPart = Math.floor(Math.random() * 1000).toString().padStart(3, '0');
+        const bundleId = `PCS-${dateStr}${pcsNum}${randomPart}`;
+        pcsCounter++;
+        
+        const qrData = `ID=${bundleId}|Buyer=${buyer}|Style=${style}|PO=${po}|Color=${color}|Size=${size}|PO Qty=${poQty}|Bundle Qty=1`;
+        
+        newBundles.push({
+          id: bundleId,
+          buyer,
+          style,
+          po,
+          color,
+          size,
+          po_qty: poQty,
+          bundle_qty: 1,
+          qrData
+        });
+      }
+    });
+    
+    setGeneratedBundles(newBundles);
+  };
+
+  const handleCuttingInput = async () => {
+    const { buyer, style, po, color } = qrFormData;
+    const entriesToProcess = Object.entries(qrSizeEntries).filter(([_, data]) => (parseInt(data.cutting_qty) || 0) > 0);
+    
+    if (entriesToProcess.length === 0) {
+      setModal({
+        isOpen: true,
+        title: 'Validation Error',
+        message: 'Please enter cutting quantity for at least one size.',
+        type: 'error'
+      });
+      return;
+    }
+
+    setIsLoading(true);
+    try {
+      const payloads: any[] = [];
+      const newBundles: any[] = [];
+      const now = new Date();
+      const dateStr = now.toISOString().slice(2, 10).replace(/-/g, '');
+      let bundleCounter = 1;
+
+      entriesToProcess.forEach(([size, data]) => {
+        const totalQty = parseInt(data.cutting_qty);
+        const bQty = parseInt(data.bundle_qty) || 20;
+        const numBundles = Math.ceil(totalQty / bQty);
+        const poQty = qrSizeStats[size]?.orderQty || 0;
+
+        for (let i = 1; i <= numBundles; i++) {
+          const currentBQty = (i === numBundles) ? (totalQty - (i - 1) * bQty) : bQty;
+          const bundleNum = bundleCounter.toString().padStart(4, '0');
+          const randomPart = Math.floor(Math.random() * 1000).toString().padStart(3, '0');
+          const bundleId = `PG-${dateStr}${bundleNum}${randomPart}`;
+          bundleCounter++;
+          
+          const qrData = `ID=${bundleId}|Buyer=${buyer}|Style=${style}|PO=${po}|Color=${color}|Size=${size}|PO Qty=${poQty}|Bundle Qty=${currentBQty}`;
+
+          payloads.push({
+            bundle_id: bundleId,
+            buyer: buyer || 'TBA',
+            style,
+            po,
+            color: color || 'N/A',
+            size: size || 'N/A',
+            po_quantity: poQty,
+            cutting_in: currentBQty,
+            line: selectedTable,
+            cutting_line: selectedTable,
+            created_at: now.toISOString(),
+            factory_name: user?.user_metadata?.factory
+          });
+
+          newBundles.push({
+            id: bundleId,
+            buyer,
+            style,
+            po,
+            color,
+            size,
+            po_qty: poQty,
+            bundle_qty: currentBQty,
+            qrData
+          });
+        }
+      });
 
       const { error } = await supabase.from('orders').insert(payloads);
       if (error) throw error;
@@ -310,14 +430,12 @@ const App: React.FC = () => {
       setModal({
         isOpen: true,
         title: 'Success',
-        message: `Cutting Input for ${numBundles} bundles recorded and QR codes generated successfully for ${selectedTable}.`,
+        message: `Cutting Input for ${newBundles.length} bundles recorded and QR codes generated successfully for ${selectedTable}.`,
         type: 'success'
       });
       
-      // Automatically trigger PDF export after recorded
       setTimeout(() => handleExportPDF(true), 1200);
-      
-      fetchData(); // Refresh data to update dashboard/reports
+      fetchData();
     } catch (error: any) {
       setModal({
         isOpen: true,
@@ -463,19 +581,27 @@ const App: React.FC = () => {
         .select('*')
         .order('created_at', { ascending: false });
 
+      let orderInfoQuery = supabase
+        .from('order_info')
+        .select('*')
+        .order('created_at', { ascending: false });
+
       if (userFactory) {
         if (userFactory === 'Maxcom International (BD) Limited') {
           // For Maxcom, show their data AND any legacy data (null)
           ordersQuery = ordersQuery.or(`factory_name.eq."${userFactory}",factory_name.is.null`);
           rejectionsQuery = rejectionsQuery.or(`factory_name.eq."${userFactory}",factory_name.is.null`);
+          orderInfoQuery = orderInfoQuery.or(`factory_name.eq."${userFactory}",factory_name.is.null`);
         } else {
           ordersQuery = ordersQuery.eq('factory_name', userFactory);
           rejectionsQuery = rejectionsQuery.eq('factory_name', userFactory);
+          orderInfoQuery = orderInfoQuery.eq('factory_name', userFactory);
         }
       }
 
       const { data: orders, error: ordersError } = await ordersQuery;
       const { data: rejections, error: rejectionsError } = await rejectionsQuery;
+      const { data: orderInfo, error: orderInfoError } = await orderInfoQuery;
       
       if (ordersError) {
         console.error("Supabase Orders Fetch Error:", ordersError.message);
@@ -496,6 +622,12 @@ const App: React.FC = () => {
         console.error("Supabase Rejection Logs Fetch Error:", rejectionsError.message);
       } else {
         setDbRejections(rejections || []);
+      }
+
+      if (orderInfoError) {
+        console.error("Supabase Order Info Fetch Error:", orderInfoError.message);
+      } else {
+        setDbOrderInfo(orderInfo || []);
       }
     } catch (error: any) {
       console.error("Connectivity Failure:", error);
@@ -578,6 +710,249 @@ const App: React.FC = () => {
       fetchData();
     }
   }, [user]);
+
+  const addOrderInfoSize = () => {
+    setOrderMasterData(prev => ({
+      ...prev,
+      sizes: [...prev.sizes, { id: Math.random().toString(36).substr(2, 9), size: '', qty: '' }]
+    }));
+  };
+
+  const removeOrderInfoSize = (id: string) => {
+    if (orderMasterData.sizes.length === 1) return;
+    setOrderMasterData(prev => ({
+      ...prev,
+      sizes: prev.sizes.filter(s => s.id !== id)
+    }));
+  };
+
+  const updateOrderInfoSize = (id: string, field: 'size' | 'qty', value: string) => {
+    setOrderMasterData(prev => ({
+      ...prev,
+      sizes: prev.sizes.map(s => s.id === id ? { ...s, [field]: value } : s)
+    }));
+  };
+
+  const handleOrderInfoSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setIsLoading(true);
+    
+    try {
+      const { buyer, style, po, color, sizes } = orderMasterData;
+      
+      // Calculate total PO Qty
+      const totalPoQty = sizes.reduce((sum, item) => sum + (parseInt(item.qty) || 0), 0);
+      
+      // Since the table might not exist, we notify the user or try to insert
+      // In a real scenario, we'd ensure the table exists or use a generic 'orders' update if applicable.
+      // But based on the request, this is a new "Master" info.
+      const { error } = await supabase
+        .from('order_info')
+        .insert([{
+          buyer,
+          style,
+          po,
+          color,
+          size_data: sizes,
+          total_po_qty: totalPoQty,
+          factory_name: user?.user_metadata?.factory
+        }]);
+
+      if (error) {
+        // If table doesn't exist, we might get a 404 or similar
+        if (error.code === '42P01') {
+          throw new Error('Table "order_info" does not exist. Please run the SQL migration to create it.');
+        }
+        throw error;
+      }
+
+      setModal({
+        isOpen: true,
+        title: 'Success',
+        message: 'Order Information saved successfully!',
+        type: 'success'
+      });
+      
+      // Reset form
+      setOrderMasterData({
+        buyer: '',
+        style: '',
+        po: '',
+        color: '',
+        sizes: [{ id: Math.random().toString(36).substr(2, 9), size: '', qty: '' }]
+      });
+      fetchData();
+    } catch (err: any) {
+      console.error("Order Info Save Error:", err);
+      setModal({
+        isOpen: true,
+        title: 'Submission Result',
+        message: err.message || 'An error occurred while saving.',
+        type: err.message?.includes('does not exist') ? 'warning' : 'error'
+      });
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleDeleteOrderInfo = (id: string) => {
+    setModal({
+      isOpen: true,
+      title: 'Delete Order Master',
+      message: 'Enter management password to delete this order information:',
+      type: 'warning',
+      showPasswordInput: true,
+      confirmLabel: 'Delete Now',
+      onConfirm: async (password) => {
+        if (password === 'pg123') {
+          setIsLoading(true);
+          try {
+            const { error } = await supabase
+              .from('order_info')
+              .delete()
+              .eq('id', id);
+
+            if (error) throw error;
+            
+            setModal({
+              isOpen: true,
+              title: 'Deleted',
+              message: 'Order information has been removed.',
+              type: 'success'
+            });
+            fetchData();
+          } catch (err: any) {
+            setModal({
+              isOpen: true,
+              title: 'Error',
+              message: err.message || 'Failed to delete.',
+              type: 'error'
+            });
+          } finally {
+            setIsLoading(false);
+          }
+        } else {
+          setModal({
+            isOpen: true,
+            title: 'Permission Denied',
+            message: 'Invalid management password.',
+            type: 'error'
+          });
+        }
+      }
+    });
+  };
+
+  const filteredOrderInfo = useMemo(() => {
+    let data = dbOrderInfo;
+    if (orderInfoSearch.buyer) {
+      data = data.filter(o => o.buyer.toLowerCase().includes(orderInfoSearch.buyer.toLowerCase()));
+    }
+    if (orderInfoSearch.style) {
+      data = data.filter(o => o.style.toLowerCase().includes(orderInfoSearch.style.toLowerCase()));
+    }
+    return data;
+  }, [dbOrderInfo, orderInfoSearch]);
+
+  const paginatedOrderInfo = useMemo(() => {
+    const start = (orderInfoPage - 1) * rowsPerPage;
+    return filteredOrderInfo.slice(start, start + rowsPerPage);
+  }, [filteredOrderInfo, orderInfoPage, rowsPerPage]);
+
+  const uniqueSizes = useMemo(() => {
+    const sizes = new Set<string>();
+    filteredOrderInfo.forEach(order => {
+      if (Array.isArray(order.size_data)) {
+        order.size_data.forEach((s: any) => {
+          if (s.size) sizes.add(s.size);
+        });
+      }
+    });
+    return Array.from(sizes).sort();
+  }, [filteredOrderInfo]);
+
+  const orderInfoTotals = useMemo(() => {
+    const totals: Record<string, number> = {};
+    uniqueSizes.forEach(size => totals[size] = 0);
+    let grandTotal = 0;
+
+    filteredOrderInfo.forEach(order => {
+      uniqueSizes.forEach(size => {
+        const sizeObj = (order.size_data || []).find((s: any) => s.size === size);
+        if (sizeObj) {
+          totals[size] += (parseInt(sizeObj.qty) || 0);
+        }
+      });
+      grandTotal += (parseInt(order.total_po_qty) || 0);
+    });
+
+    return { totals, grandTotal };
+  }, [filteredOrderInfo, uniqueSizes]);
+
+  const handleExportOrderInfoExcel = async () => {
+    if (filteredOrderInfo.length === 0) {
+      setModal({ isOpen: true, title: 'No Data', message: 'No records to export.', type: 'warning' });
+      return;
+    }
+
+    const workbook = new ExcelJS.Workbook();
+    const worksheet = workbook.addWorksheet('Order Database');
+
+    // Headers
+    const headers = ['Date', 'Time', 'Buyer', 'Style', 'PO', 'Color', ...uniqueSizes.map(s => `${s} Qty`), 'Total PO Qty'];
+    const headerRow = worksheet.addRow(headers);
+    
+    // Style headers
+    headerRow.eachCell((cell) => {
+      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1E293B' } };
+      cell.font = { color: { argb: 'FFFFFFFF' }, bold: true };
+      cell.alignment = { horizontal: 'center' };
+    });
+
+    // Content
+    filteredOrderInfo.forEach(order => {
+      const date = new Date(order.created_at);
+      const rowData: any[] = [
+        date.toLocaleDateString(),
+        date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        order.buyer || 'N/A',
+        order.style,
+        order.po,
+        order.color,
+      ];
+
+      // Add each size qty
+      uniqueSizes.forEach(sizeName => {
+        const sizeObj = (order.size_data || []).find((s: any) => s.size === sizeName);
+        rowData.push(sizeObj ? parseInt(sizeObj.qty) || 0 : 0);
+      });
+
+      rowData.push(parseInt(order.total_po_qty) || 0);
+      worksheet.addRow(rowData);
+    });
+
+    // Add Totals Row
+    const totalRowData: any[] = ['', '', 'TOTAL', '', '', ''];
+    uniqueSizes.forEach(size => {
+      totalRowData.push(orderInfoTotals.totals[size]);
+    });
+    totalRowData.push(orderInfoTotals.grandTotal);
+    
+    const totalRow = worksheet.addRow(totalRowData);
+    totalRow.eachCell((cell) => {
+      cell.font = { bold: true };
+      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF1F5F9' } };
+      cell.border = { top: { style: 'thin' } };
+    });
+
+    // Adjust column widths
+    worksheet.columns.forEach(column => {
+      column.width = 15;
+    });
+
+    const buffer = await workbook.xlsx.writeBuffer();
+    saveAs(new Blob([buffer]), `Order_Database_${new Date().toISOString().split('T')[0]}.xlsx`);
+  };
 
   useEffect(() => {
     if (activeTab === 'scan' && formData.id) {
@@ -1325,6 +1700,11 @@ const App: React.FC = () => {
     });
   }, [dbOrders, orderSearch, orderCategoryFilter, orderStartDate, orderEndDate, orderProcessStepFilter, orderSewingLineFilter, orderFinishingLineFilter]);
 
+  const paginatedOrders = useMemo(() => {
+    const start = (ordersPage - 1) * rowsPerPage;
+    return filteredOrders.slice(start, start + rowsPerPage);
+  }, [filteredOrders, ordersPage, rowsPerPage]);
+
   const hourlyReportData = useMemo(() => {
     const hours = Array.from({ length: 13 }, (_, i) => i + 8); // 8am to 8pm
     const processCol = processToColumn(hourlyReportProcess);
@@ -1404,6 +1784,16 @@ const App: React.FC = () => {
     });
   }, [dbOrders, historySearch]);
 
+  const paginatedHourlyReports = useMemo(() => {
+    const start = (hourlyReportsPage - 1) * rowsPerPage;
+    return hourlyReportData.slice(start, start + rowsPerPage);
+  }, [hourlyReportData, hourlyReportsPage]);
+
+  const paginatedHistory = useMemo(() => {
+    const start = (historyPage - 1) * rowsPerPage;
+    return filteredHistory.slice(start, start + rowsPerPage);
+  }, [filteredHistory, historyPage, rowsPerPage]);
+
   const filteredRejections = useMemo(() => {
     return dbRejections.filter(r => {
       const mb = !rejectionSearch.buyer || (r.buyer || '').toLowerCase().includes(rejectionSearch.buyer.toLowerCase());
@@ -1427,6 +1817,11 @@ const App: React.FC = () => {
       return mb && ms && mp && mc && md;
     });
   }, [dbRejections, rejectionSearch, rejectionCategoryFilter, rejectionStartDate, rejectionEndDate]);
+
+  const paginatedRejections = useMemo(() => {
+    const start = (rejectionsPage - 1) * rowsPerPage;
+    return filteredRejections.slice(start, start + rowsPerPage);
+  }, [filteredRejections, rejectionsPage, rowsPerPage]);
 
   const reportTotals = useMemo(() => {
     return filteredOrders.reduce((acc, o) => {
@@ -1593,9 +1988,308 @@ const App: React.FC = () => {
         </div>
       )}
 
+      {activeTab === 'order-info' && (
+        <div className="space-y-8 animate-fadeIn max-w-5xl mx-auto">
+          <div className="bg-white rounded-[2rem] p-8 md:p-12 shadow-xl border border-slate-100">
+            <div className="flex items-center gap-4 mb-10">
+              <div className="w-12 h-12 rounded-2xl bg-blue-600 flex items-center justify-center text-white shadow-lg shadow-blue-200">
+                <FileText size={24} />
+              </div>
+              <div>
+                <h3 className="text-2xl font-bold text-slate-900 tracking-tight">Order Information</h3>
+                <p className="text-slate-500 text-sm font-medium mt-1">Define master order details and size breakdown</p>
+              </div>
+            </div>
+
+            <form onSubmit={handleOrderInfoSubmit} className="space-y-10">
+              {/* Header Fields */}
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+                <div className="space-y-2">
+                  <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Buyer Name</label>
+                  <input
+                    type="text"
+                    required
+                    value={orderMasterData.buyer}
+                    onChange={(e) => setOrderMasterData({ ...orderMasterData, buyer: e.target.value })}
+                    className="w-full bg-slate-50 border-2 border-slate-100 rounded-2xl px-5 py-3 text-sm font-bold text-slate-900 focus:border-blue-500 focus:bg-white transition-all outline-none"
+                    placeholder="Enter buyer name"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Style Number</label>
+                  <input
+                    type="text"
+                    required
+                    value={orderMasterData.style}
+                    onChange={(e) => setOrderMasterData({ ...orderMasterData, style: e.target.value })}
+                    className="w-full bg-slate-50 border-2 border-slate-100 rounded-2xl px-5 py-3 text-sm font-bold text-slate-900 focus:border-blue-500 focus:bg-white transition-all outline-none"
+                    placeholder="Enter style #"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">PO Number</label>
+                  <input
+                    type="text"
+                    required
+                    value={orderMasterData.po}
+                    onChange={(e) => setOrderMasterData({ ...orderMasterData, po: e.target.value })}
+                    className="w-full bg-slate-50 border-2 border-slate-100 rounded-2xl px-5 py-3 text-sm font-bold text-slate-900 focus:border-blue-500 focus:bg-white transition-all outline-none"
+                    placeholder="Enter PO #"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Color</label>
+                  <input
+                    type="text"
+                    required
+                    value={orderMasterData.color}
+                    onChange={(e) => setOrderMasterData({ ...orderMasterData, color: e.target.value })}
+                    className="w-full bg-slate-50 border-2 border-slate-100 rounded-2xl px-5 py-3 text-sm font-bold text-slate-900 focus:border-blue-500 focus:bg-white transition-all outline-none"
+                    placeholder="Enter color"
+                  />
+                </div>
+              </div>
+
+              {/* Size Breakdown section */}
+              <div className="pt-6 border-t border-slate-100">
+                <div className="flex items-center justify-between mb-6">
+                  <div className="flex items-center gap-3">
+                    <h4 className="text-sm font-black text-slate-900 uppercase tracking-widest">Size Wise Qty</h4>
+                    <span className="px-2 py-0.5 bg-blue-50 text-blue-600 rounded-md text-[9px] font-bold uppercase">{orderMasterData.sizes.length} Sizes</span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={addOrderInfoSize}
+                    className="flex items-center gap-2 px-4 py-2 bg-slate-900 text-white rounded-xl text-[10px] font-black uppercase tracking-widest hover:bg-slate-800 transition-all shadow-lg shadow-slate-200"
+                  >
+                    <Plus size={14} />
+                    <span>Add Size</span>
+                  </button>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  {orderMasterData.sizes.map((sizeItem) => (
+                    <div key={sizeItem.id} className="flex gap-3 items-center bg-slate-50 p-3 rounded-2xl border border-slate-100 hover:border-blue-200 transition-colors">
+                      <div className="w-24">
+                        <input
+                          type="text"
+                          required
+                          value={sizeItem.size}
+                          onChange={(e) => updateOrderInfoSize(sizeItem.id, 'size', e.target.value)}
+                          className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs font-bold text-slate-900 focus:border-blue-500 transition-all outline-none"
+                          placeholder="Size (S, M...)"
+                        />
+                      </div>
+                      <div className="flex-1">
+                        <input
+                          type="number"
+                          required
+                          value={sizeItem.qty}
+                          onChange={(e) => updateOrderInfoSize(sizeItem.id, 'qty', e.target.value)}
+                          className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs font-bold text-slate-900 focus:border-blue-500 transition-all outline-none"
+                          placeholder="Size Qty"
+                        />
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => removeOrderInfoSize(sizeItem.id)}
+                        className="p-1.5 text-slate-300 hover:text-rose-500 transition-colors"
+                        disabled={orderMasterData.sizes.length === 1}
+                      >
+                        <Trash2 size={16} />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="mt-8 p-6 bg-slate-900 text-white rounded-2xl flex items-center justify-between shadow-xl shadow-slate-200">
+                  <div className="flex items-center gap-3">
+                    <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+                    <span className="text-[10px] font-black uppercase tracking-widest opacity-60">Total Cumulative Qty</span>
+                  </div>
+                  <span className="text-2xl font-black italic tracking-tight">
+                    {orderMasterData.sizes.reduce((sum, s) => sum + (parseInt(s.qty) || 0), 0).toLocaleString()} <span className="text-[10px] uppercase ml-1 opacity-50 not-italic">pcs</span>
+                  </span>
+                </div>
+              </div>
+
+              <div className="pt-6">
+                <button
+                  type="submit"
+                  disabled={isLoading}
+                  className="w-full bg-blue-600 text-white rounded-2xl py-5 font-black uppercase tracking-widest hover:bg-blue-700 transition-all shadow-xl shadow-blue-100 flex items-center justify-center gap-3 disabled:opacity-50 disabled:cursor-not-allowed group relative overflow-hidden"
+                >
+                  <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white/10 to-transparent -translate-x-full group-hover:translate-x-full transition-transform duration-1000" />
+                  {isLoading ? (
+                    <RefreshCw className="animate-spin" size={24} />
+                  ) : (
+                    <>
+                      <span className="text-sm">Submit Order Information</span>
+                      <CheckCircle2 size={24} className="group-hover:scale-110 transition-transform" />
+                    </>
+                  )}
+                </button>
+              </div>
+            </form>
+          </div>
+
+          <div className="bg-white rounded-[2rem] p-8 md:p-12 shadow-xl border border-slate-100 overflow-hidden">
+            <div className="flex flex-col xl:flex-row xl:items-center justify-between gap-6 mb-10">
+              <div className="flex items-center gap-4">
+                <div className="w-12 h-12 rounded-2xl bg-emerald-600 flex items-center justify-center text-white shadow-lg shadow-emerald-200">
+                  <FileText size={20} />
+                </div>
+                <div>
+                  <h3 className="text-2xl font-bold text-slate-900 tracking-tight">Order Database</h3>
+                  <p className="text-slate-500 text-sm font-medium mt-1">Master order database and breakdown</p>
+                </div>
+              </div>
+              
+              <div className="flex flex-wrap items-center gap-3">
+                <div className="relative group">
+                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 group-focus-within:text-blue-500 transition-colors" size={14} />
+                  <input
+                    type="text"
+                    placeholder="Filter Buyer..."
+                    value={orderInfoSearch.buyer}
+                    onChange={(e) => setOrderInfoSearch({ ...orderInfoSearch, buyer: e.target.value })}
+                    className="pl-9 pr-4 py-2.5 bg-slate-50 border border-slate-100 rounded-xl text-xs font-bold focus:bg-white focus:border-blue-500 transition-all outline-none w-40"
+                  />
+                </div>
+                <div className="relative group">
+                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 group-focus-within:text-blue-500 transition-colors" size={14} />
+                  <input
+                    type="text"
+                    placeholder="Filter Style..."
+                    value={orderInfoSearch.style}
+                    onChange={(e) => setOrderInfoSearch({ ...orderInfoSearch, style: e.target.value })}
+                    className="pl-9 pr-4 py-2.5 bg-slate-50 border border-slate-100 rounded-xl text-xs font-bold focus:bg-white focus:border-blue-500 transition-all outline-none w-44"
+                  />
+                </div>
+                <button
+                  onClick={handleExportOrderInfoExcel}
+                  className="px-5 py-2.5 bg-emerald-600 text-white rounded-xl text-xs font-black flex items-center gap-2 hover:bg-emerald-700 transition-all shadow-lg shadow-emerald-100 uppercase tracking-widest"
+                >
+                  <Download size={14} /> Export Excel
+                </button>
+              </div>
+            </div>
+
+            <div className="overflow-x-auto -mx-8 md:-mx-12 px-8 md:px-12 pb-4">
+              <table className="w-full border-separate border-spacing-y-2">
+                <thead>
+                  <tr className="text-[10px] font-black text-white uppercase tracking-[0.2em]">
+                    <th className="px-4 py-4 text-left bg-slate-800 first:rounded-l-xl whitespace-nowrap">Date/Time</th>
+                    <th className="px-4 py-4 text-left bg-slate-800 whitespace-nowrap">Buyer</th>
+                    <th className="px-4 py-4 text-left bg-slate-800 whitespace-nowrap">Style</th>
+                    <th className="px-4 py-4 text-left bg-slate-800 whitespace-nowrap">PO</th>
+                    <th className="px-4 py-4 text-left bg-slate-800 whitespace-nowrap">Color</th>
+                    {uniqueSizes.map(size => (
+                      <th key={size} className="px-4 py-4 text-right bg-slate-800 whitespace-nowrap">{size} Qty</th>
+                    ))}
+                    <th className="px-4 py-4 text-right bg-slate-800 whitespace-nowrap">Total PO Qty</th>
+                    <th className="px-4 py-4 text-center bg-slate-800 last:rounded-r-xl whitespace-nowrap">Action</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {paginatedOrderInfo.map((order) => (
+                    <motion.tr
+                      key={order.id}
+                      initial={{ opacity: 0, y: 10 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      className="group bg-slate-50 hover:bg-white transition-colors"
+                    >
+                      <td className="px-4 py-3 first:rounded-l-xl last:rounded-r-xl border-y border-transparent group-hover:border-slate-100">
+                        <div className="flex flex-col">
+                          <span className="text-[11px] font-bold text-slate-900">{new Date(order.created_at).toLocaleDateString()}</span>
+                          <span className="text-[9px] text-slate-400 font-medium">{new Date(order.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+                        </div>
+                      </td>
+                      <td className="px-4 py-3 border-y border-transparent group-hover:border-slate-100">
+                        <span className="text-[11px] font-black text-slate-900 uppercase tracking-tight">{order.buyer || 'N/A'}</span>
+                      </td>
+                      <td className="px-4 py-3 border-y border-transparent group-hover:border-slate-100">
+                        <span className="px-2 py-0.5 bg-blue-100 text-blue-700 rounded text-[10px] font-black tracking-tight">{order.style}</span>
+                      </td>
+                      <td className="px-4 py-3 border-y border-transparent group-hover:border-slate-100">
+                        <span className="text-[11px] font-bold text-slate-700">{order.po}</span>
+                      </td>
+                      <td className="px-4 py-3 border-y border-transparent group-hover:border-slate-100">
+                        <span className="px-1.5 py-0.5 bg-white text-slate-600 rounded text-[9px] font-bold uppercase border border-slate-200">{order.color}</span>
+                      </td>
+                      
+                      {uniqueSizes.map(sizeName => {
+                        const sizeObj = (order.size_data || []).find((s: any) => s.size === sizeName);
+                        return (
+                          <td key={sizeName} className="px-4 py-3 border-y border-transparent group-hover:border-slate-100 text-right">
+                            <span className="text-xs font-black text-slate-900">
+                              {sizeObj ? parseInt(sizeObj.qty).toLocaleString() : '-'}
+                            </span>
+                          </td>
+                        );
+                      })}
+
+                      <td className="px-4 py-3 border-y border-transparent group-hover:border-slate-100 text-right">
+                        <span className="text-xs font-bold text-blue-600">{parseInt(order.total_po_qty).toLocaleString()}</span>
+                      </td>
+                      <td className="px-4 py-3 first:rounded-l-xl last:rounded-r-xl border-y border-transparent group-hover:border-slate-100 text-center">
+                        <button
+                          onClick={() => handleDeleteOrderInfo(order.id)}
+                          className="p-1.5 text-slate-300 hover:text-rose-500 transition-colors"
+                          title="Delete Order Record"
+                        >
+                          <Trash2 size={14} />
+                        </button>
+                      </td>
+                    </motion.tr>
+                  ))}
+                  {filteredOrderInfo.length > 0 && (
+                    <tr className="bg-slate-100/50">
+                      <td colSpan={5} className="px-4 py-4 rounded-l-xl text-xs font-black text-slate-900 uppercase tracking-widest text-right">
+                        Grand Total
+                      </td>
+                      {uniqueSizes.map(sizeName => (
+                        <td key={sizeName} className="px-4 py-4 text-right">
+                          <span className="text-xs font-black text-slate-900">
+                            {orderInfoTotals.totals[sizeName].toLocaleString()}
+                          </span>
+                        </td>
+                      ))}
+                      <td className="px-4 py-4 text-right">
+                        <span className="text-xs font-black text-blue-700">
+                          {orderInfoTotals.grandTotal.toLocaleString()}
+                        </span>
+                      </td>
+                      <td className="px-4 py-4 rounded-r-xl"></td>
+                    </tr>
+                  )}
+                  {filteredOrderInfo.length === 0 && (
+                    <tr>
+                      <td colSpan={uniqueSizes.length + 7} className="py-20 text-center">
+                        <div className="flex flex-col items-center gap-3 opacity-20">
+                          <FileText size={48} />
+                          <p className="text-[11px] font-black uppercase tracking-widest">No matching order records</p>
+                        </div>
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+
+            <Pagination 
+              totalRows={filteredOrderInfo.length}
+              currentPage={orderInfoPage}
+              rowsPerPage={rowsPerPage}
+              onPageChange={setOrderInfoPage}
+            />
+          </div>
+        </div>
+      )}
+
       {activeTab === 'generate-qr' && (
         <div className="space-y-12 animate-fadeIn">
-          <div className="bg-white p-12 rounded-[3rem] shadow-2xl border border-slate-100 max-w-5xl mx-auto">
+          <div className="bg-white p-12 rounded-[3rem] shadow-2xl border border-slate-100 max-w-6xl mx-auto">
             <div className="flex items-center gap-4 mb-12">
               <div className="w-12 h-12 rounded-2xl bg-indigo-600 flex items-center justify-center text-white shadow-lg shadow-indigo-200">
                 <QrCode size={24} />
@@ -1603,28 +2297,267 @@ const App: React.FC = () => {
               <h2 className="text-3xl font-black text-slate-900 tracking-tight uppercase">Generate Bundle QR</h2>
             </div>
 
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-8 text-left">
-              <ScanField label="Buyer" value={qrFormData.buyer} onChange={(v: string) => setQrFormData({...qrFormData, buyer: v})} />
-              <ScanField label="Style *" value={qrFormData.style} onChange={(v: string) => setQrFormData({...qrFormData, style: v})} />
-              <ScanField label="PO *" value={qrFormData.po} onChange={(v: string) => setQrFormData({...qrFormData, po: v})} />
-              <ScanField label="Color" value={qrFormData.color} onChange={(v: string) => setQrFormData({...qrFormData, color: v})} />
-              <ScanField label="Size" value={qrFormData.size} onChange={(v: string) => setQrFormData({...qrFormData, size: v})} />
-              <ScanField label="PO Qty" value={qrFormData.po_qty} onChange={(v: string) => setQrFormData({...qrFormData, po_qty: v})} />
-              <ScanField label="Cutting Qty *" value={qrFormData.cutting_qty} onChange={(v: string) => setQrFormData({...qrFormData, cutting_qty: v})} />
-              <ScanField label="Bundle Qty *" value={qrFormData.bundle_qty} onChange={(v: string) => setQrFormData({...qrFormData, bundle_qty: v})} />
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-8 text-left mb-12">
+              <div className="flex flex-col group">
+                <label className="text-[10px] font-black uppercase text-slate-400 mb-2 tracking-widest group-focus-within:text-indigo-600 transition-colors">Buyer</label>
+                <input 
+                  list="buyer-list"
+                  className="bg-slate-50 border-4 border-slate-50 focus:border-indigo-500 focus:bg-white shadow-sm rounded-2xl px-6 py-4 font-black text-slate-900 outline-none transition-all"
+                  value={qrFormData.buyer}
+                  onChange={(e) => setQrFormData({...qrFormData, buyer: e.target.value})}
+                  placeholder="Select or Type..."
+                />
+                <datalist id="buyer-list">
+                  {Array.from(new Set(dbOrderInfo.map(o => o.buyer))).map(b => <option key={b} value={b} />)}
+                </datalist>
+              </div>
+
+              <div className="flex flex-col group">
+                <label className="text-[10px] font-black uppercase text-slate-400 mb-2 tracking-widest group-focus-within:text-indigo-600 transition-colors">Style *</label>
+                <input 
+                  list="style-list"
+                  className="bg-slate-50 border-4 border-slate-50 focus:border-indigo-500 focus:bg-white shadow-sm rounded-2xl px-6 py-4 font-black text-slate-900 outline-none transition-all"
+                  value={qrFormData.style}
+                  onChange={(e) => {
+                    const style = e.target.value;
+                    const matches = dbOrderInfo.filter(o => o.style === style && (!qrFormData.buyer || o.buyer === qrFormData.buyer));
+                    if (matches.length === 1) {
+                      setQrFormData({
+                        ...qrFormData,
+                        style,
+                        buyer: matches[0].buyer,
+                        po: matches[0].po,
+                        color: matches[0].color
+                      });
+                    } else {
+                      setQrFormData({...qrFormData, style});
+                    }
+                  }}
+                  placeholder="Select or Type..."
+                />
+                <datalist id="style-list">
+                  {Array.from(new Set(dbOrderInfo.filter(o => !qrFormData.buyer || o.buyer === qrFormData.buyer).map(o => o.style))).map(s => <option key={s} value={s} />)}
+                </datalist>
+              </div>
+
+              <div className="flex flex-col group">
+                <label className="text-[10px] font-black uppercase text-slate-400 mb-2 tracking-widest group-focus-within:text-indigo-600 transition-colors">PO *</label>
+                <select 
+                  className="bg-slate-50 border-4 border-slate-50 focus:border-indigo-500 focus:bg-white shadow-sm rounded-2xl px-6 py-4 font-black text-slate-900 outline-none transition-all appearance-none"
+                  value={qrFormData.po}
+                  onChange={(e) => setQrFormData({...qrFormData, po: e.target.value})}
+                >
+                  <option value="">Select PO</option>
+                  {Array.from(new Set(dbOrderInfo.filter(o => 
+                    o.style === qrFormData.style && (!qrFormData.buyer || o.buyer === qrFormData.buyer)
+                  ).map(o => o.po))).map(po => <option key={po} value={po}>{po}</option>)}
+                </select>
+              </div>
+
+              <div className="flex flex-col group">
+                <label className="text-[10px] font-black uppercase text-slate-400 mb-2 tracking-widest group-focus-within:text-indigo-600 transition-colors">Color</label>
+                <select 
+                  className="bg-slate-50 border-4 border-slate-50 focus:border-indigo-500 focus:bg-white shadow-sm rounded-2xl px-6 py-4 font-black text-slate-900 outline-none transition-all appearance-none"
+                  value={qrFormData.color}
+                  onChange={(e) => setQrFormData({...qrFormData, color: e.target.value})}
+                >
+                  <option value="">Select Color</option>
+                  {Array.from(new Set(dbOrderInfo.filter(o => 
+                    o.style === qrFormData.style && o.po === qrFormData.po && (!qrFormData.buyer || o.buyer === qrFormData.buyer)
+                  ).map(o => o.color))).map(c => <option key={c} value={c}>{c}</option>)}
+                </select>
+              </div>
+
+              <div className="flex flex-col group">
+                <label className="text-[10px] font-black uppercase text-slate-400 mb-2 tracking-widest group-focus-within:text-indigo-600 transition-colors">PO Qty</label>
+                <div className="bg-slate-100 border-4 border-slate-100 shadow-sm rounded-2xl px-6 py-4 font-black text-indigo-600 flex items-center h-full min-h-[64px]">
+                  {qrMatchedOrder ? (parseInt(qrMatchedOrder.total_po_qty) || 0).toLocaleString() : '-'}
+                </div>
+              </div>
             </div>
+
+            {qrMatchedOrder && (
+              <div className="bg-slate-50 rounded-[2.5rem] p-8 border border-slate-200 overflow-hidden">
+                <div className="flex items-center justify-between mb-8">
+                  <h3 className="text-sm font-black text-slate-900 uppercase tracking-widest">Size Wise Cutting Input</h3>
+                  <div className="flex gap-4">
+                    <div className="flex items-center gap-2 px-4 py-2 bg-white rounded-xl border border-slate-200 shadow-sm">
+                      <span className="text-[9px] font-black text-slate-400 uppercase">Standard Bundle</span>
+                      <input 
+                        type="number"
+                        className="w-12 text-center text-xs font-black text-indigo-600 outline-none"
+                        value={qrFormData.bundle_qty}
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          setQrFormData({...qrFormData, bundle_qty: val});
+                          // Apply to all initialized sizes
+                          const newEntries = {...qrSizeEntries};
+                          Object.keys(newEntries).forEach(s => newEntries[s].bundle_qty = val);
+                          setQrSizeEntries(newEntries);
+                        }}
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left border-separate border-spacing-y-2">
+                    <thead>
+                      <tr className="text-[9px] font-black text-slate-400 uppercase tracking-widest">
+                        <th className="px-6 py-2">Size</th>
+                        <th className="px-6 py-2 text-right">Size Qty</th>
+                        <th className="px-6 py-2 text-right">Prev Cut</th>
+                        <th className="px-6 py-2 text-right">Balance</th>
+                        <th className="px-6 py-2 w-32 bg-indigo-50 text-indigo-600 rounded-t-xl border-x border-t border-indigo-100">Cutting Qty</th>
+                        <th className="px-6 py-2 w-32">Bundle Qty</th>
+                        <th className="px-6 py-2 text-right">New Total</th>
+                        <th className="px-6 py-2 text-right">New Balance</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {(qrMatchedOrder.size_data || []).map((s: any) => {
+                        const stats = qrSizeStats[s.size] || { orderQty: 0, totalCut: 0 };
+                        const entry = qrSizeEntries[s.size] || { cutting_qty: '', bundle_qty: qrFormData.bundle_qty };
+                        const newCutValue = parseInt(entry.cutting_qty) || 0;
+                        const balance = stats.orderQty - stats.totalCut;
+                        const newTotal = stats.totalCut + newCutValue;
+                        const newBalance = stats.orderQty - newTotal;
+
+                        return (
+                          <tr key={s.id} className="bg-white rounded-2xl shadow-sm border border-slate-100 group hover:border-indigo-200 transition-colors">
+                            <td className="px-6 py-4 first:rounded-l-2xl">
+                              <span className="px-3 py-1 bg-indigo-50 text-indigo-700 rounded-lg text-xs font-black uppercase">{s.size}</span>
+                            </td>
+                            <td className="px-6 py-4 text-right">
+                              <span className="text-xs font-black text-slate-900">{stats.orderQty.toLocaleString()}</span>
+                            </td>
+                            <td className="px-6 py-4 text-right">
+                              <span className="text-xs font-bold text-slate-500">{stats.totalCut.toLocaleString()}</span>
+                            </td>
+                            <td className="px-6 py-4 text-right">
+                              <span className={cn("text-xs font-black", balance > 0 ? "text-emerald-600" : "text-rose-500")}>
+                                {balance.toLocaleString()}
+                              </span>
+                            </td>
+                            <td className="px-6 py-4 bg-indigo-50/30 border-x border-indigo-100">
+                              <input 
+                                type="number"
+                                placeholder="..."
+                                className="w-full bg-white border border-indigo-200 rounded-xl px-4 py-2 text-xs font-black text-indigo-700 focus:border-indigo-500 outline-none transition-all"
+                                value={entry.cutting_qty}
+                                onChange={(e) => setQrSizeEntries({
+                                  ...qrSizeEntries,
+                                  [s.size]: { ...entry, cutting_qty: e.target.value }
+                                })}
+                              />
+                            </td>
+                            <td className="px-6 py-4">
+                              <input 
+                                type="number"
+                                className="w-full bg-slate-50 border border-slate-100 rounded-xl px-4 py-2 text-xs font-black text-slate-400 focus:border-indigo-500 outline-none transition-all"
+                                value={entry.bundle_qty}
+                                onChange={(e) => setQrSizeEntries({
+                                  ...qrSizeEntries,
+                                  [s.size]: { ...entry, bundle_qty: e.target.value }
+                                })}
+                              />
+                            </td>
+                            <td className="px-6 py-4 text-right">
+                              <span className={cn("text-xs font-black", newTotal <= stats.orderQty ? "text-indigo-600" : "text-amber-500 animate-pulse")}>
+                                {newTotal.toLocaleString()}
+                              </span>
+                            </td>
+                            <td className="px-6 py-4 last:rounded-r-2xl text-right">
+                              <span className={cn("text-xs font-black", newBalance >= 0 ? "text-emerald-500" : "text-rose-500")}>
+                                {newBalance.toLocaleString()}
+                              </span>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                      {/* Total Row */}
+                      <tr className="bg-slate-900/5 border border-slate-900/10">
+                        <td className="px-6 py-4 rounded-l-2xl">
+                          <span className="text-xs font-black text-slate-900 uppercase">Total</span>
+                        </td>
+                        <td className="px-6 py-4 text-right">
+                          <span className="text-xs font-black text-slate-900">{qrTableTotals.orderQty.toLocaleString()}</span>
+                        </td>
+                        <td className="px-6 py-4 text-right">
+                          <span className="text-xs font-bold text-slate-500">{qrTableTotals.prevCut.toLocaleString()}</span>
+                        </td>
+                        <td className="px-6 py-4 text-right">
+                          <span className="text-xs font-black text-slate-900">{(qrTableTotals.orderQty - qrTableTotals.prevCut).toLocaleString()}</span>
+                        </td>
+                        <td className="px-6 py-4 bg-indigo-100/50 border-x border-indigo-200">
+                          <div className="w-full bg-white rounded-xl px-4 py-2 text-xs font-black text-indigo-700 text-center shadow-sm">
+                            {qrTableTotals.cuttingPlanned.toLocaleString()}
+                          </div>
+                        </td>
+                        <td className="px-6 py-4"></td>
+                        <td className="px-6 py-4 text-right">
+                          <span className="text-xs font-black text-indigo-600">{(qrTableTotals.prevCut + qrTableTotals.cuttingPlanned).toLocaleString()}</span>
+                        </td>
+                        <td className="px-6 py-4 last:rounded-r-2xl text-right">
+                          <span className="text-xs font-black text-slate-900">{(qrTableTotals.orderQty - (qrTableTotals.prevCut + qrTableTotals.cuttingPlanned)).toLocaleString()}</span>
+                        </td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+
+                <div className="mt-8 flex items-center justify-between p-6 bg-slate-900 rounded-3xl text-white shadow-xl">
+                   <div className="flex items-center gap-6">
+                      <div className="flex flex-col">
+                        <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest">Total Cutting Planned</span>
+                        <span className="text-xl font-black italic tracking-tight">
+                          {Object.values(qrSizeEntries).reduce((sum, entry) => sum + (parseInt(entry.cutting_qty) || 0), 0).toLocaleString()}
+                        </span>
+                      </div>
+                      <div className="w-px h-8 bg-slate-800" />
+                      <div className="flex flex-col">
+                        <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest">Estimated Bundles</span>
+                        <span className="text-xl font-black italic text-indigo-400 tracking-tight">
+                          {Object.values(qrSizeEntries).reduce((sum, entry) => {
+                            const c = parseInt(entry.cutting_qty) || 0;
+                            const b = parseInt(entry.bundle_qty) || 20;
+                            return sum + Math.ceil(c / b);
+                          }, 0)}
+                        </span>
+                      </div>
+                   </div>
+                   <div className="flex items-center gap-4">
+                      <div className="text-right">
+                        <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest block">Summary Status</span>
+                        <span className="text-[11px] font-bold text-emerald-400">Ready to Generate</span>
+                      </div>
+                      <div className="w-10 h-10 rounded-xl bg-emerald-500/20 flex items-center justify-center text-emerald-400">
+                        <CheckCircle2 size={24} />
+                      </div>
+                   </div>
+                </div>
+              </div>
+            )}
 
             <div className="mt-12 flex flex-col md:flex-row gap-6">
               <button 
                 onClick={handleGenerateQR}
-                className="flex-1 bg-slate-950 text-white py-8 rounded-[2rem] font-black uppercase tracking-widest shadow-2xl active:scale-[0.99] transition-all flex items-center justify-center gap-4 group"
+                disabled={!qrMatchedOrder}
+                className={cn(
+                  "flex-1 py-8 rounded-[2rem] font-black uppercase tracking-widest shadow-2xl active:scale-[0.99] transition-all flex items-center justify-center gap-4 group",
+                  qrMatchedOrder ? "bg-slate-950 text-white" : "bg-slate-100 text-slate-400 cursor-not-allowed"
+                )}
               >
                 <QrCode size={20} className="group-hover:rotate-12 transition-transform" />
                 Bundle QR
               </button>
               <button 
                 onClick={handleGeneratePcsQR}
-                className="flex-1 bg-indigo-600 text-white py-8 rounded-[2rem] font-black uppercase tracking-widest shadow-2xl active:scale-[0.99] transition-all flex items-center justify-center gap-4 group"
+                disabled={!qrMatchedOrder}
+                className={cn(
+                  "flex-1 py-8 rounded-[2rem] font-black uppercase tracking-widest shadow-2xl active:scale-[0.99] transition-all flex items-center justify-center gap-4 group",
+                  qrMatchedOrder ? "bg-indigo-600 text-white" : "bg-slate-100 text-slate-400 cursor-not-allowed"
+                )}
               >
                 <QrCode size={20} className="group-hover:rotate-12 transition-transform" />
                 QR code (pcs)
@@ -1634,6 +2567,7 @@ const App: React.FC = () => {
                   setQrFormData({
                     buyer: '', style: '', po: '', color: '', size: '', po_qty: '', cutting_qty: '', bundle_qty: '20'
                   });
+                  setQrSizeEntries({});
                   setGeneratedBundles([]);
                 }}
                 className="px-12 bg-slate-100 text-slate-400 py-8 rounded-[2rem] font-black uppercase tracking-widest hover:bg-slate-200 hover:text-slate-900 transition-all"
@@ -1644,129 +2578,145 @@ const App: React.FC = () => {
           </div>
 
           {generatedBundles.length > 0 && (
-            <div className="space-y-8 animate-fadeIn">
-              <div className="flex justify-between items-end px-4">
-                <div>
-                  <h3 className="text-2xl font-black text-slate-900 uppercase">Generated Bundles</h3>
-                  <p className="text-slate-400 font-bold text-xs uppercase tracking-widest mt-1">Total {generatedBundles.length} bundles created</p>
+            <div className="space-y-12 animate-fadeIn">
+              <div className="space-y-8">
+                <div className="flex justify-between items-end px-4">
+                  <div>
+                    <h3 className="text-2xl font-black text-slate-900 uppercase">Generated Bundles</h3>
+                    <p className="text-slate-400 font-bold text-xs uppercase tracking-widest mt-1">Total {generatedBundles.length} bundles created</p>
+                  </div>
+                </div>
+
+                <div id="qr-bundles-container" ref={qrContainerRef} className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-8 print:grid-cols-2 bg-white p-4 rounded-[2rem]">
+                  {generatedBundles.map((bundle, idx) => (
+                    <div key={idx} className="bg-white p-6 rounded-[2rem] shadow-xl border border-slate-100 flex flex-col items-center space-y-6 print:shadow-none print:border print:rounded-none break-inside-avoid">
+                      <div className="p-4 bg-white border-2 border-slate-100 rounded-2xl shadow-inner">
+                        <QRCodeSVG 
+                          value={bundle.qrData} 
+                          size={180}
+                          level="H"
+                          includeMargin={true}
+                        />
+                      </div>
+                      
+                      <div className="w-full border-t-2 border-slate-100 pt-6 space-y-1">
+                        <div className="flex justify-between items-center bg-slate-50 px-4 py-2 rounded-xl">
+                          <span className="text-[9px] font-black text-slate-400 uppercase">ID</span>
+                          <span className="text-[11px] font-black text-slate-900 tabular-nums">{bundle.id}</span>
+                        </div>
+                        <div className="grid grid-cols-2 gap-1">
+                          <div className="flex flex-col bg-slate-50 p-3 rounded-xl">
+                            <span className="text-[8px] font-black text-slate-400 uppercase mb-1">Buyer</span>
+                            <span className="text-[10px] font-black text-slate-900 truncate">{bundle.buyer || '-'}</span>
+                          </div>
+                          <div className="flex flex-col bg-slate-50 p-3 rounded-xl">
+                            <span className="text-[8px] font-black text-slate-400 uppercase mb-1">Style</span>
+                            <span className="text-[10px] font-black text-slate-900 truncate">{bundle.style}</span>
+                          </div>
+                          <div className="flex flex-col bg-slate-50 p-3 rounded-xl">
+                            <span className="text-[8px] font-black text-slate-400 uppercase mb-1">PO</span>
+                            <span className="text-[10px] font-black text-slate-900 truncate">{bundle.po}</span>
+                          </div>
+                          <div className="flex flex-col bg-slate-50 p-3 rounded-xl">
+                            <span className="text-[8px] font-black text-slate-400 uppercase mb-1">Color</span>
+                            <span className="text-[10px] font-black text-slate-900 truncate">{bundle.color || '-'}</span>
+                          </div>
+                          <div className="flex flex-col bg-slate-50 p-3 rounded-xl">
+                            <span className="text-[8px] font-black text-slate-400 uppercase mb-1">Size</span>
+                            <span className="text-[10px] font-black text-slate-900 truncate">{bundle.size || '-'}</span>
+                          </div>
+                          <div className="flex flex-col bg-slate-50 p-3 rounded-xl">
+                            <span className="text-[8px] font-black text-slate-400 uppercase mb-1">B. Qty</span>
+                            <span className="text-[10px] font-black text-indigo-600">{bundle.bundle_qty}</span>
+                          </div>
+                        </div>
+                        <div className="flex justify-between items-center bg-slate-900 px-4 py-3 rounded-xl mt-2">
+                          <span className="text-[8px] font-black text-slate-400 uppercase">Size Qty</span>
+                          <span className="text-[11px] font-black text-white tabular-nums">{bundle.po_qty || '-'}</span>
+                        </div>
+                      </div>
+
+                      <div className="flex gap-2 w-full no-print">
+                        <button 
+                          onClick={() => {
+                            navigator.clipboard.writeText(bundle.id);
+                            setScanStatus({ message: 'Bundle ID Copied', type: 'success' });
+                          }}
+                          className="flex-1 bg-slate-50 text-slate-400 p-3 rounded-xl hover:bg-indigo-50 hover:text-indigo-600 transition-all flex items-center justify-center gap-2 text-[9px] font-black uppercase"
+                        >
+                          <Copy size={12} />
+                          Copy ID
+                        </button>
+                      </div>
+                    </div>
+                  ))}
                 </div>
               </div>
 
-              <div id="qr-bundles-container" ref={qrContainerRef} className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-8 print:grid-cols-2 bg-white p-4 rounded-[2rem]">
-                {generatedBundles.map((bundle, idx) => (
-                  <div key={idx} className="bg-white p-6 rounded-[2rem] shadow-xl border border-slate-100 flex flex-col items-center space-y-6 print:shadow-none print:border print:rounded-none break-inside-avoid">
-                    <div className="p-4 bg-white border-2 border-slate-100 rounded-2xl shadow-inner">
-                      <QRCodeSVG 
-                        value={bundle.qrData} 
-                        size={180}
-                        level="H"
-                        includeMargin={true}
+              <div className="bg-white p-8 md:p-12 rounded-[2.5rem] shadow-xl border border-slate-100 space-y-8 animate-fadeIn">
+                <div className="flex items-center gap-4">
+                  <div className="w-12 h-12 rounded-2xl bg-blue-600 flex items-center justify-center text-white shadow-lg shadow-blue-200">
+                    <Database size={24} />
+                  </div>
+                  <div>
+                    <h3 className="text-2xl font-black text-slate-900 uppercase">Save to Database</h3>
+                    <p className="text-slate-400 font-bold text-xs uppercase tracking-widest mt-1">Finalize and record cutting input</p>
+                  </div>
+                </div>
+
+                <div className="space-y-8">
+                  <div className="flex flex-col md:flex-row items-center gap-8">
+                    <div className="flex items-center gap-4 bg-slate-50 px-8 py-5 rounded-2xl w-full md:w-auto border border-slate-100">
+                      <input 
+                        type="checkbox" 
+                        id="auto-email-final" 
+                        checked={autoEmail} 
+                        onChange={(e) => setAutoEmail(e.target.checked)}
+                        className="w-6 h-6 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
+                      />
+                      <label htmlFor="auto-email-final" className="text-xs font-black text-slate-700 uppercase cursor-pointer">
+                        Auto Email PDF
+                      </label>
+                    </div>
+                    <div className="flex-1 w-full relative">
+                      <Mail className="absolute left-6 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
+                      <input 
+                        type="email" 
+                        placeholder="recipient@example.com"
+                        value={recipientEmail}
+                        onChange={(e) => setRecipientEmail(e.target.value)}
+                        className="w-full bg-slate-50 border border-slate-200 rounded-2xl pl-16 pr-8 py-5 text-sm font-bold outline-none focus:border-indigo-500 transition-all text-black focus:bg-white"
                       />
                     </div>
-                    
-                    <div className="w-full border-t-2 border-slate-100 pt-6 space-y-1">
-                      <div className="flex justify-between items-center bg-slate-50 px-4 py-2 rounded-xl">
-                        <span className="text-[9px] font-black text-slate-400 uppercase">ID</span>
-                        <span className="text-[11px] font-black text-slate-900 tabular-nums">{bundle.id}</span>
-                      </div>
-                      <div className="grid grid-cols-2 gap-1">
-                        <div className="flex flex-col bg-slate-50 p-3 rounded-xl">
-                          <span className="text-[8px] font-black text-slate-400 uppercase mb-1">Buyer</span>
-                          <span className="text-[10px] font-black text-slate-900 truncate">{bundle.buyer || '-'}</span>
-                        </div>
-                        <div className="flex flex-col bg-slate-50 p-3 rounded-xl">
-                          <span className="text-[8px] font-black text-slate-400 uppercase mb-1">Style</span>
-                          <span className="text-[10px] font-black text-slate-900 truncate">{bundle.style}</span>
-                        </div>
-                        <div className="flex flex-col bg-slate-50 p-3 rounded-xl">
-                          <span className="text-[8px] font-black text-slate-400 uppercase mb-1">PO</span>
-                          <span className="text-[10px] font-black text-slate-900 truncate">{bundle.po}</span>
-                        </div>
-                        <div className="flex flex-col bg-slate-50 p-3 rounded-xl">
-                          <span className="text-[8px] font-black text-slate-400 uppercase mb-1">Color</span>
-                          <span className="text-[10px] font-black text-slate-900 truncate">{bundle.color || '-'}</span>
-                        </div>
-                        <div className="flex flex-col bg-slate-50 p-3 rounded-xl">
-                          <span className="text-[8px] font-black text-slate-400 uppercase mb-1">Size</span>
-                          <span className="text-[10px] font-black text-slate-900 truncate">{bundle.size || '-'}</span>
-                        </div>
-                        <div className="flex flex-col bg-slate-50 p-3 rounded-xl">
-                          <span className="text-[8px] font-black text-slate-400 uppercase mb-1">B. Qty</span>
-                          <span className="text-[10px] font-black text-indigo-600">{bundle.bundle_qty}</span>
-                        </div>
-                      </div>
-                      <div className="flex justify-between items-center bg-slate-900 px-4 py-3 rounded-xl mt-2">
-                        <span className="text-[8px] font-black text-slate-400 uppercase">PO Qty</span>
-                        <span className="text-[11px] font-black text-white tabular-nums">{bundle.po_qty || '-'}</span>
-                      </div>
-                    </div>
-
-                    <div className="flex gap-2 w-full no-print">
-                      <button 
-                        onClick={() => {
-                          navigator.clipboard.writeText(bundle.id);
-                          setScanStatus({ message: 'Bundle ID Copied', type: 'success' });
-                        }}
-                        className="flex-1 bg-slate-50 text-slate-400 p-3 rounded-xl hover:bg-indigo-50 hover:text-indigo-600 transition-all flex items-center justify-center gap-2 text-[9px] font-black uppercase"
-                      >
-                        <Copy size={12} />
-                        Copy ID
-                      </button>
-                    </div>
                   </div>
-                ))}
+
+                  <div className="flex flex-col md:flex-row items-center gap-8">
+                    <div className="flex flex-col w-full md:w-72">
+                      <label className="text-[10px] font-black text-slate-400 uppercase mb-2 ml-2 text-left tracking-widest">Production Table</label>
+                      <select 
+                        value={selectedTable}
+                        onChange={(e) => setSelectedTable(e.target.value)}
+                        className="bg-slate-50 border border-slate-200 rounded-2xl px-8 py-5 text-base font-bold outline-none focus:border-slate-900 transition-all appearance-none cursor-pointer text-black"
+                      >
+                        {Array.from({ length: 15 }, (_, i) => `Table ${i + 1}`).map(t => (
+                          <option key={t} value={t}>{t}</option>
+                        ))}
+                      </select>
+                    </div>
+                    <button 
+                      onClick={handleCuttingInput}
+                      disabled={Object.values(qrSizeEntries).every(v => !v.cutting_qty || parseInt(v.cutting_qty) === 0)}
+                      className="flex-1 py-10 bg-blue-600 text-white rounded-[2.5rem] font-black uppercase tracking-[0.25em] shadow-2xl shadow-blue-200 active:scale-[0.98] transition-all flex items-center justify-center gap-6 group"
+                    >
+                      <Database size={28} className="group-hover:translate-y-[-4px] transition-transform" />
+                      Submit Cutting to Database
+                    </button>
+                  </div>
+                </div>
               </div>
             </div>
           )}
-
-          <div className="mt-8 pt-8 border-t border-slate-100 space-y-6">
-            <div className="flex flex-col md:flex-row items-center gap-6">
-              <div className="flex items-center gap-3 bg-slate-50 px-6 py-4 rounded-2xl w-full md:w-auto">
-                <input 
-                  type="checkbox" 
-                  id="auto-email" 
-                  checked={autoEmail} 
-                  onChange={(e) => setAutoEmail(e.target.checked)}
-                  className="w-5 h-5 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
-                />
-                <label htmlFor="auto-email" className="text-[11px] font-black text-slate-700 uppercase cursor-pointer">
-                  Auto Email PDF to
-                </label>
-              </div>
-              <div className="flex-1 w-full">
-                <input 
-                  type="email" 
-                  placeholder="Enter recipient email address..."
-                  value={recipientEmail}
-                  onChange={(e) => setRecipientEmail(e.target.value)}
-                  className="w-full bg-slate-50 border border-slate-200 rounded-2xl px-6 py-4 text-xs font-bold outline-none focus:border-indigo-500 transition-all text-black"
-                />
-              </div>
-            </div>
-
-            <div className="flex flex-col md:flex-row items-center gap-6 pb-12">
-              <div className="flex flex-col w-full md:w-64">
-              <label className="text-[9px] font-black text-slate-400 uppercase mb-1 ml-1 text-left">Select Table</label>
-              <select 
-                value={selectedTable}
-                onChange={(e) => setSelectedTable(e.target.value)}
-                className="bg-slate-50 border border-slate-200 rounded-2xl px-6 py-4 text-sm font-bold outline-none focus:border-slate-900 transition-all appearance-none cursor-pointer text-black"
-              >
-                {Array.from({ length: 10 }, (_, i) => `Table ${i + 1}`).map(t => (
-                  <option key={t} value={t}>{t}</option>
-                ))}
-              </select>
-            </div>
-            <button 
-              onClick={handleCuttingInput}
-              className="flex-1 bg-blue-600 text-white py-8 rounded-[2rem] font-black uppercase tracking-widest shadow-2xl active:scale-[0.99] transition-all flex items-center justify-center gap-4 group"
-            >
-              <Scissors size={20} className="group-hover:rotate-12 transition-transform" />
-              Submit Cutting input
-            </button>
-          </div>
         </div>
-      </div>
       )}
 
       {activeTab === 'orders' && (
@@ -1964,7 +2914,7 @@ const App: React.FC = () => {
                   </tr>
                 </thead>
                 <tbody className="divide-y text-center">
-                  {filteredOrders.map((o: any) => (
+                  {paginatedOrders.map((o: any) => (
                     <tr key={o.id} className="hover:bg-slate-50 transition-colors">
                       <td className="px-4 py-4 text-left text-slate-500 tabular-nums">
                         {o.created_at ? new Date(o.created_at).toLocaleString() : '-'}
@@ -2094,6 +3044,13 @@ const App: React.FC = () => {
                 )}
               </table>
             </div>
+
+            <Pagination 
+              totalRows={filteredOrders.length}
+              currentPage={ordersPage}
+              rowsPerPage={rowsPerPage}
+              onPageChange={setOrdersPage}
+            />
           </div>
         </div>
       )}
@@ -2204,7 +3161,7 @@ const App: React.FC = () => {
                   </tr>
                 </thead>
                 <tbody className="divide-y text-center">
-                  {hourlyReportData.map((d, idx) => (
+                  {paginatedHourlyReports.map((d, idx) => (
                     <tr key={idx} className="hover:bg-slate-50 transition-colors">
                       <td className="px-4 py-4 text-left font-black border-r border-slate-100">{d.line}</td>
                       <td className="px-4 py-4 text-left border-r border-slate-100">{d.buyer}</td>
@@ -2261,6 +3218,13 @@ const App: React.FC = () => {
                 )}
               </table>
             </div>
+
+            <Pagination 
+              totalRows={hourlyReportData.length}
+              currentPage={hourlyReportsPage}
+              rowsPerPage={rowsPerPage}
+              onPageChange={setHourlyReportsPage}
+            />
           </div>
         </div>
       )}
@@ -2465,7 +3429,7 @@ const App: React.FC = () => {
                     </tr>
                   </thead>
                   <tbody className="divide-y text-center">
-                    {filteredRejections.map((r, idx) => (
+                    {paginatedRejections.map((r, idx) => (
                       <tr key={idx} className="hover:bg-rose-50/30 transition-colors">
                         <td className="px-4 py-4 text-left border-r border-slate-100 text-slate-500 tabular-nums">
                           {new Date(r.created_at).toLocaleString()}
@@ -2497,6 +3461,13 @@ const App: React.FC = () => {
                   </tbody>
                 </table>
               </div>
+
+              <Pagination 
+                totalRows={filteredRejections.length}
+                currentPage={rejectionsPage}
+                rowsPerPage={rowsPerPage}
+                onPageChange={setRejectionsPage}
+              />
             </div>
           ) : (
             <div className="bg-white rounded-[2.5rem] shadow-2xl overflow-hidden border border-slate-100 p-20 text-center">
@@ -2643,7 +3614,7 @@ const App: React.FC = () => {
                    </tr>
                  </thead>
                  <tbody className="divide-y">
-                   {filteredHistory.map(o => (
+                   {paginatedHistory.map(o => (
                      <tr key={o.id} className="hover:bg-slate-50">
                        <td className="px-8 py-5 text-left tabular-nums text-slate-500">{new Date(o.created_at).toLocaleString()}</td>
                        <td className="px-8 py-5 text-left font-black">{o.bundle_id}</td>
@@ -2677,6 +3648,13 @@ const App: React.FC = () => {
                  </tbody>
                </table>
              </div>
+
+             <Pagination 
+               totalRows={filteredHistory.length}
+               currentPage={historyPage}
+               rowsPerPage={rowsPerPage}
+               onPageChange={setHistoryPage}
+             />
           </div>
         </div>
       )}
@@ -2779,5 +3757,97 @@ const SearchFieldSmall = ({ label, value, onChange, type = "text" }: any) => (
     </div>
   </div>
 );
+
+const Pagination = ({ totalRows, currentPage, rowsPerPage, onPageChange }: any) => {
+  const totalPages = Math.ceil(totalRows / rowsPerPage);
+  if (totalPages <= 1) return null;
+
+  // Calculate window of pages to show
+  const getPageNumbers = () => {
+    const pages = [];
+    const maxVisiblePages = 5;
+    
+    if (totalPages <= maxVisiblePages) {
+      for (let i = 1; i <= totalPages; i++) pages.push(i);
+    } else {
+      let start = Math.max(1, currentPage - 2);
+      let end = Math.min(totalPages, start + maxVisiblePages - 1);
+      
+      if (end === totalPages) {
+        start = Math.max(1, end - maxVisiblePages + 1);
+      }
+      
+      for (let i = start; i <= end; i++) pages.push(i);
+    }
+    return pages;
+  };
+
+  const pages = getPageNumbers();
+
+  return (
+    <div className="flex flex-col sm:flex-row items-center justify-between px-8 py-5 bg-white border-t border-slate-100 gap-4">
+      <div className="text-[10px] font-black text-slate-400 uppercase tracking-widest order-2 sm:order-1">
+        Showing <span className="text-slate-900">{(currentPage - 1) * rowsPerPage + 1}</span> to <span className="text-slate-900">{Math.min(currentPage * rowsPerPage, totalRows)}</span> of <span className="text-slate-900">{totalRows}</span> records
+      </div>
+      <div className="flex items-center space-x-2 order-1 sm:order-2">
+        <button
+          onClick={() => onPageChange(currentPage - 1)}
+          disabled={currentPage === 1}
+          className="p-2 rounded-xl hover:bg-slate-50 disabled:opacity-20 disabled:cursor-not-allowed transition-all border border-transparent hover:border-slate-100"
+        >
+          <ChevronLeft size={18} className="text-slate-600" />
+        </button>
+        
+        <div className="flex items-center space-x-1">
+          {pages[0] > 1 && (
+            <>
+              <button 
+                onClick={() => onPageChange(1)}
+                className="w-9 h-9 rounded-xl text-[10px] font-black transition-all border border-slate-100 text-slate-600 hover:border-indigo-500 hover:text-indigo-600"
+              >
+                1
+              </button>
+              {pages[0] > 2 && <span className="text-slate-300 px-1">...</span>}
+            </>
+          )}
+
+          {pages.map(p => (
+            <button
+              key={p}
+              onClick={() => onPageChange(p)}
+              className={`w-9 h-9 rounded-xl text-[10px] font-black transition-all border ${
+                currentPage === p 
+                  ? 'bg-indigo-600 text-white border-indigo-600 shadow-xl shadow-indigo-100' 
+                  : 'bg-white text-slate-600 border-slate-100 hover:border-indigo-500 hover:text-indigo-600'
+              }`}
+            >
+              {p}
+            </button>
+          ))}
+
+          {pages[pages.length - 1] < totalPages && (
+            <>
+              {pages[pages.length - 1] < totalPages - 1 && <span className="text-slate-300 px-1">...</span>}
+              <button 
+                onClick={() => onPageChange(totalPages)}
+                className="w-9 h-9 rounded-xl text-[10px] font-black transition-all border border-slate-100 text-slate-600 hover:border-indigo-500 hover:text-indigo-600"
+              >
+                {totalPages}
+              </button>
+            </>
+          )}
+        </div>
+
+        <button
+          onClick={() => onPageChange(currentPage + 1)}
+          disabled={currentPage === totalPages}
+          className="p-2 rounded-xl hover:bg-slate-50 disabled:opacity-20 disabled:cursor-not-allowed transition-all border border-transparent hover:border-slate-100"
+        >
+          <ChevronRight size={18} className="text-slate-600" />
+        </button>
+      </div>
+    </div>
+  );
+};
 
 export default App;
