@@ -10,6 +10,11 @@ In the Netlify Dashboard (Site settings > Build & deploy > Environment variables
 | `VITE_SUPABASE_URL` | Your Supabase Project URL | `https://xxxx.supabase.co` |
 | `VITE_SUPABASE_ANON_KEY` | Your Supabase Anon Key | `eyJhbGciOiJIUz...` |
 | `VITE_ADMIN_PASSWORD` | Password for protected actions | `112` (default) |
+| `VITE_GEMINI_API_KEY` | (Optional) Gemini AI API Key | `AIzaSy...` |
+| `VITE_EMAILJS_SERVICE_ID` | (Optional) EmailJS Service ID | `service_xxx` |
+| `VITE_EMAILJS_TEMPLATE_ID` | (Optional) EmailJS Template ID | `template_xxx` |
+| `VITE_EMAILJS_PUBLIC_KEY` | (Optional) EmailJS Public Key | `user_xxx` |
+| `VITE_RECIPIENT_EMAIL` | (Optional) Default email for reports | `admin@example.com` |
 
 ## 2. Permissions Policy (Camera Access)
 The application requires camera access for the QR scanner. 

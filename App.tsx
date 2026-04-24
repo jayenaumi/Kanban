@@ -653,17 +653,22 @@ const App: React.FC = () => {
         if (error) {
           console.error("Session Error:", error.message);
           // If refresh token is invalid or not found, clear local session
-          const isInvalidToken = error.message.includes('refresh_token_not_found') || 
-                                error.message.includes('Refresh Token Not Found') ||
-                                error.message.includes('Invalid Refresh Token');
+          const msg = (error.message || '').toLowerCase();
+          const isInvalidToken = msg.includes('refresh_token_not_found') || 
+                                msg.includes('refresh token not found') ||
+                                msg.includes('invalid refresh token') ||
+                                msg.includes('refresh_token_invalid');
           
           if (isInvalidToken) {
-            console.warn("Invalid session detected, signing out...");
+            console.warn("Invalid session detected, clearing auth state...");
             try {
-              await supabase.auth.signOut();
+              await (supabase.auth as any).signOut({ scope: 'local' }).catch(() => {});
             } catch (signOutErr) {
-              console.error("Sign out call failed:", signOutErr);
+              console.error("Local sign out failed:", signOutErr);
             }
+            setUser(null);
+          } else {
+            // Also clear user if there is any other error but not matching invalid token
             setUser(null);
           }
         } else {
@@ -1179,7 +1184,7 @@ const App: React.FC = () => {
       confirmLabel: 'Erase All Data',
       showPasswordInput: true,
       onConfirm: async (password) => {
-        const adminPass = import.meta.env.VITE_ADMIN_PASSWORD || '112';
+        const adminPass = import.meta.env.VITE_ADMIN_PASSWORD || '';
         if (password !== adminPass) {
           setScanStatus({ message: 'Invalid Password. Action Aborted.', type: 'error' });
           return;
@@ -1235,7 +1240,7 @@ const App: React.FC = () => {
       confirmLabel: 'Delete',
       showPasswordInput: true,
       onConfirm: async (password) => {
-        const adminPass = import.meta.env.VITE_ADMIN_PASSWORD || '112';
+        const adminPass = import.meta.env.VITE_ADMIN_PASSWORD || '';
         if (password !== adminPass) {
           setScanStatus({ message: 'Invalid Password. Action Aborted.', type: 'error' });
           return;
@@ -1277,7 +1282,7 @@ const App: React.FC = () => {
       confirmLabel: 'Delete',
       showPasswordInput: true,
       onConfirm: async (password) => {
-        const adminPass = import.meta.env.VITE_ADMIN_PASSWORD || '112';
+        const adminPass = import.meta.env.VITE_ADMIN_PASSWORD || '';
         if (password !== adminPass) {
           setScanStatus({ message: 'Invalid Password. Action Aborted.', type: 'error' });
           return;

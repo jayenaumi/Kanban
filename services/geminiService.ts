@@ -3,8 +3,14 @@ import { GoogleGenAI } from "@google/genai";
 import { ScanningData, OrderMaster } from "../types";
 
 export const getProductionInsights = async (scanData: ScanningData[], orders: OrderMaster[]) => {
-  // Always use the direct constructor pattern with the API key from process.env
-  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+  // Try to get API key from various environment sources
+  const apiKey = (import.meta.env?.VITE_GEMINI_API_KEY) || (process.env?.GEMINI_API_KEY) || (process.env?.API_KEY);
+  
+  if (!apiKey) {
+    return "Gemini API key not found. Please set VITE_GEMINI_API_KEY in your environment.";
+  }
+
+  const ai = new GoogleGenAI({ apiKey });
 
   const dataSummary = `
     Current Scans: ${JSON.stringify(scanData.slice(-20))}
